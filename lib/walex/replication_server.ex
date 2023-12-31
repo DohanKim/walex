@@ -29,10 +29,6 @@ defmodule WalEx.ReplicationServer do
   def init(opts) do
     app_name = Keyword.get(opts, :app_name)
 
-    if is_nil(Process.whereis(ReplicationPublisher)) do
-      {:ok, _pid} = ReplicationPublisher.start_link([])
-    end
-
     {:ok, %{step: :disconnected, app_name: app_name}}
   end
 

@@ -31,3 +31,6 @@ walex-*.tar
 .vscode/
 
 .tool-versions
+
+
+**/.DS_Store
