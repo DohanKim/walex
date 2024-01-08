@@ -1,13 +1,11 @@
-defmodule WalEx.ReplicationPublisher do
+defmodule WalEx.Replication.Publisher do
   @moduledoc """
-  Publishes messages from Replication to Events
+  Publishes messages from Replication to Events & Destinations
   """
   use GenServer
 
-  alias WalEx.Changes
-  alias WalEx.Events
-  alias WalEx.Postgres.Decoder.Messages
-  alias WalEx.Types
+  alias WalEx.{Changes, Config, Destinations, Types}
+  alias WalEx.Decoder.Messages
 
   defmodule(State,
     do:
@@ -20,16 +18,27 @@ defmodule WalEx.ReplicationPublisher do
 
   defstruct [:relations]
 
-  def start_link(args) do
-    GenServer.start_link(__MODULE__, args, name: __MODULE__)
+  def start_link(opts) do
+    name =
+      opts
+      |> Keyword.get(:app_name)
+      |> registry_name
+
+    GenServer.start_link(__MODULE__, opts, name: name)
   end
 
   def process_message(message, app_name) do
-    GenServer.cast(__MODULE__, %{message: message, app_name: app_name})
+    name = registry_name(app_name)
+
+    GenServer.cast(name, %{message: message, app_name: app_name})
+  end
+
+  defp registry_name(app_name) do
+    Config.Registry.set_name(:set_gen_server, __MODULE__, app_name)
   end
 
   @impl true
-  def init(_) do
+  def init(_opts) do
     Process.flag(:message_queue_data, :off_heap)
 
     {:ok, %State{}}
@@ -57,7 +66,7 @@ defmodule WalEx.ReplicationPublisher do
         %State{transaction: {current_txn_lsn, txn}, relations: _relations} = state
       )
       when commit_lsn == current_txn_lsn do
-    Events.process(txn, app_name)
+    Destinations.process(txn, app_name)
 
     %{state | transaction: nil}
 
@@ -91,10 +100,10 @@ defmodule WalEx.ReplicationPublisher do
   @impl true
   def handle_cast(
         %{message: %Messages.Insert{relation_id: relation_id, tuple_data: tuple_data}},
-        %State{
+        state = %State{
           transaction: {lsn, %{commit_timestamp: commit_timestamp, changes: changes} = txn},
           relations: relations
-        } = state
+        }
       )
       when is_map(relations) do
     case Map.fetch(relations, relation_id) do
@@ -131,10 +140,10 @@ defmodule WalEx.ReplicationPublisher do
             tuple_data: tuple_data
           }
         },
-        %State{
+        state = %State{
           relations: relations,
           transaction: {lsn, %{commit_timestamp: commit_timestamp, changes: changes} = txn}
-        } = state
+        }
       )
       when is_map(relations) do
     case Map.fetch(relations, relation_id) do
@@ -173,10 +182,10 @@ defmodule WalEx.ReplicationPublisher do
             changed_key_tuple_data: changed_key_tuple_data
           }
         },
-        %State{
+        state = %State{
           relations: relations,
           transaction: {lsn, %{commit_timestamp: commit_timestamp, changes: changes} = txn}
-        } = state
+        }
       )
       when is_map(relations) do
     case Map.fetch(relations, relation_id) do
@@ -207,10 +216,10 @@ defmodule WalEx.ReplicationPublisher do
   @impl true
   def handle_cast(
         %{message: %Messages.Truncate{truncated_relations: truncated_relations}},
-        %State{
+        state = %State{
           relations: relations,
           transaction: {lsn, %{commit_timestamp: commit_timestamp, changes: changes} = txn}
-        } = state
+        }
       )
       when is_list(truncated_relations) and is_list(changes) and is_map(relations) do
     new_changes =

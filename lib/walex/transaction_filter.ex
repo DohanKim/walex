@@ -2,7 +2,18 @@
 # which in turn draws on https://github.com/cainophile/cainophile
 
 defmodule WalEx.TransactionFilter do
-  alias WalEx.Changes.Transaction
+  @moduledoc """
+  Filter transactions based on the relation and event type.
+  """
+
+  alias WalEx.Changes.{
+    DeletedRecord,
+    NewRecord,
+    Transaction,
+    UpdatedRecord
+  }
+
+  alias WalEx.Decoder.Messages.Relation.Column
 
   require Logger
 
@@ -16,9 +27,9 @@ defmodule WalEx.TransactionFilter do
       iex> txn = %Transaction{changes: [
       ...>   %WalEx.Changes.NewRecord{
       ...>     columns: [
-      ...>       %WalEx.Postgres.Decoder.Messages.Relation.Column{flags: [:key], name: "id", type: "int8", type_modifier: 4294967295},
-      ...>       %WalEx.Postgres.Decoder.Messages.Relation.Column{flags: [], name: "details", type: "text", type_modifier: 4294967295},
-      ...>       %WalEx.Postgres.Decoder.Messages.Relation.Column{flags: [], name: "user_id", type: "int8", type_modifier: 4294967295}
+      ...>       %WalEx.Decoder.Messages.Relation.Column{flags: [:key], name: "id", type: "int8", type_modifier: 4294967295},
+      ...>       %WalEx.Decoder.Messages.Relation.Column{flags: [], name: "details", type: "text", type_modifier: 4294967295},
+      ...>       %WalEx.Decoder.Messages.Relation.Column{flags: [], name: "user_id", type: "int8", type_modifier: 4294967295}
       ...>     ],
       ...>     commit_timestamp: nil,
       ...>     record: %{"details" => "The SCSI system is down, program the haptic microchip so we can back up the SAS circuit!", "id" => "14", "user_id" => "1"},
@@ -48,8 +59,7 @@ defmodule WalEx.TransactionFilter do
       {:ok, filter} ->
         Enum.any?(changes, fn change -> change_matches(event, filter, change) end)
 
-      {:error, msg} ->
-        Logger.warn("Could not parse relation filter: #{inspect(msg)}")
+      {:error, _msg} ->
         false
     end
   end
@@ -62,7 +72,7 @@ defmodule WalEx.TransactionFilter do
   end
 
   defp change_matches(_event, filter, change) do
-    name_matches(filter.schema, change.schema) and name_matches(filter.table, change.table)
+    name_matches?(filter.schema, change.schema) and name_matches?(filter.table, change.table)
   end
 
   @doc """
@@ -97,11 +107,8 @@ defmodule WalEx.TransactionFilter do
     end
   end
 
-  defp name_matches(nil, _change_name), do: true
-
-  defp name_matches(filter_name, change_name) do
-    filter_name == change_name
-  end
+  defp name_matches?(nil, _change_name), do: true
+  defp name_matches?(filter_name, change_name), do: filter_name == change_name
 
   def insert_event?(relation, txn), do: relation("INSERT", relation, txn)
   def update_event?(relation, txn), do: relation("UPDATE", relation, txn)
@@ -119,59 +126,105 @@ defmodule WalEx.TransactionFilter do
     end
   end
 
-  def table(table_name, %Transaction{changes: changes}) do
-    Enum.filter(changes, fn change -> has_table?(change, table_name) end)
+  @doc """
+  Returns a list of subscribed changes
+  """
+  def filter_subscribed(%Transaction{changes: changes}, app_name) do
+    Enum.filter(changes, &subscribes?(&1, app_name))
   end
 
-  def table(_table, _txn), do: false
-
-  defp has_table?(change, table_name), do: String.to_atom(change.table) == table_name
-
-  def has_tables?(tables, %Transaction{changes: _changes} = txn, app_name) when is_list(tables) do
-    tables
-    |> Enum.map(fn table -> has_tables?(table, txn, app_name) end)
-    |> Enum.all?()
+  @doc """
+  Returns a list of changes for the given table name and type (optional)
+  """
+  def filter_changes(%Transaction{changes: changes}, table, nil, app_name) do
+    subscribes_and_has_table(changes, table, app_name)
   end
 
-  def has_tables?(table_name, %Transaction{changes: changes}, app_name)
-      when is_atom(table_name) do
-    Enum.any?(changes, fn change ->
-      has_table?(change, table_name) && subscribes?(change, app_name)
+  def filter_changes(%Transaction{changes: changes}, table, type, app_name) do
+    changes
+    |> subscribes_and_has_table(table, app_name)
+    |> Enum.filter(&record_type?(&1, type))
+  end
+
+  defp subscribes_and_has_table(changes, table, app_name) do
+    Enum.filter(changes, &subscribes_to_table?(&1, table, app_name))
+  end
+
+  def subscribes_to_table?(change, table, app_name) do
+    has_table?(change, table) && subscribes?(change, app_name)
+  end
+
+  def subscribes?(%{table: table}, app_name) do
+    subscriptions = WalEx.Config.get_configs(app_name, :subscriptions)
+
+    table in subscriptions
+  end
+
+  def has_table?(%{table: table}, table_name) when is_atom(table), do: table == table_name
+
+  def has_table?(%{table: table}, table_name) when is_binary(table),
+    do: String.to_atom(table) == table_name
+
+  def has_table?(_txn, _table_name), do: false
+
+  def record_type?(%NewRecord{type: "INSERT"}, :insert), do: true
+  def record_type?(%UpdatedRecord{type: "UPDATE"}, :update), do: true
+  def record_type?(%DeletedRecord{type: "DELETE"}, :delete), do: true
+  def record_type?(_txn, _type), do: false
+
+  def filter_unwatched_fields(events, unwatched_changes) do
+    Enum.filter(events, &unwatched_fields?(&1, unwatched_changes))
+  end
+
+  def unwatched_fields?(%{changes: nil}, _unwatched_changes), do: true
+
+  def unwatched_fields?(%{changes: changes}, unwatched_changes) do
+    changes
+    |> Enum.filter(fn {key, _value} -> key not in unwatched_changes end)
+    |> Kernel.!=([])
+  end
+
+  def unwatched_fields?(_event, _unwatched_changes), do: true
+
+  def filter_unwatched_records(events, unwatched_records) do
+    Enum.filter(events, &watched_record?(&1, unwatched_records))
+  end
+
+  def watched_record?(%{new_record: nil, old_record: old_record = %{}}, unwatched_records) do
+    not contains_unwatched_records?(old_record, unwatched_records)
+  end
+
+  def watched_record?(%{new_record: new_record = %{}}, unwatched_records) do
+    not contains_unwatched_records?(new_record, unwatched_records)
+  end
+
+  def watched_record?(_event, _unwatched_records), do: false
+
+  def contains_unwatched_records?(record = %{}, unwatched_records = %{}) do
+    Enum.all?(unwatched_records, fn {key, value} ->
+      Map.has_key?(record, key) and Map.get(record, key) == value
     end)
   end
 
-  def has_tables?(table_name, txn, app_name) when is_binary(table_name) do
-    has_tables?(String.to_atom(table_name), txn, app_name)
-  end
+  def map_changes(old_record, new_record) do
+    fields = Map.keys(old_record)
 
-  def has_tables?(_tables, _txn, _app_name), do: false
+    Enum.reduce(fields, %{}, fn field, acc ->
+      old_value = Map.get(old_record, field)
+      new_value = Map.get(new_record, field)
 
-  defp subscribes?(change, app_name) do
-    subscriptions =
-      app_name
-      |> WalEx.Configs.get_configs([:subscriptions])
-      |> Keyword.get(:subscriptions)
-
-    String.to_atom(change.table) in subscriptions
-  end
-
-  def changes(old_record, record) do
-    case MapDiff.diff(old_record, record) do
-      %{value: changes} ->
-        filter_changes(changes)
-
-      _ ->
-        %{}
-    end
-  end
-
-  defp filter_changes(changes) do
-    changes
-    |> Enum.filter(fn {_key, change} ->
-      if is_map(change) && Map.has_key?(change, :changed) do
-        change.changed in [:primitive_change, :map_change]
+      if old_value != new_value do
+        Map.put(acc, field, %{old_value: old_value, new_value: new_value})
+      else
+        acc
       end
     end)
-    |> Enum.into(%{})
+  end
+
+  def map_columns(columns) do
+    Enum.reduce(columns, %{}, fn %Column{name: name, type: type}, acc ->
+      name = String.to_atom(name)
+      Map.put(acc, name, type)
+    end)
   end
 end

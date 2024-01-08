@@ -1,15 +1,18 @@
 # This file steals liberally from https://github.com/chasers/postgrex_replication_demo/blob/main/lib/replication.ex
 # which in turn draws on https://hexdocs.pm/postgrex/Postgrex.ReplicationConnection.html#module-logical-replication
 
-defmodule WalEx.ReplicationServer do
+defmodule WalEx.Replication.Server do
+  @moduledoc """
+  This module is responsible for setting up the replication connection
+  """
   use Postgrex.ReplicationConnection
 
-  alias WalEx.Postgres.Decoder
-  alias WalEx.ReplicationPublisher
+  alias WalEx.Config.Registry, as: WalExRegistry
+  alias WalEx.Decoder
+  alias WalEx.Replication.Publisher
 
   def start_link(opts) do
     app_name = Keyword.get(opts, :app_name)
-
     opts = set_pgx_replication_conn_opts(app_name)
 
     Postgrex.ReplicationConnection.start_link(__MODULE__, [app_name: app_name], opts)
@@ -17,10 +20,12 @@ defmodule WalEx.ReplicationServer do
 
   defp set_pgx_replication_conn_opts(app_name) do
     database_configs_keys = [:hostname, :username, :password, :port, :database, :ssl, :ssl_opts]
-
     extra_opts = [auto_reconnect: true]
-    database_configs = WalEx.Configs.get_configs(app_name, database_configs_keys)
-    replications_name = [name: WalEx.Registry.set_name(:set_gen_server, __MODULE__, app_name)]
+    database_configs = WalEx.Config.get_configs(app_name, database_configs_keys)
+
+    replications_name = [
+      name: WalExRegistry.set_name(:set_gen_server, __MODULE__, app_name)
+    ]
 
     extra_opts ++ database_configs ++ replications_name
   end
@@ -42,12 +47,12 @@ defmodule WalEx.ReplicationServer do
   end
 
   @impl true
-  def handle_result([%Postgrex.Result{rows: rows} | _results], %{step: :create_slot} = state) do
+  def handle_result([%Postgrex.Result{rows: rows} | _results], state = %{step: :create_slot}) do
     slot_name = rows |> hd |> hd
 
     publication =
       state.app_name
-      |> WalEx.Configs.get_configs([:publication])
+      |> WalEx.Config.get_configs([:publication])
       |> Keyword.get(:publication)
 
     query =
@@ -61,7 +66,7 @@ defmodule WalEx.ReplicationServer do
   def handle_data(<<?w, _wal_start::64, _wal_end::64, _clock::64, rest::binary>>, state) do
     rest
     |> Decoder.decode_message()
-    |> ReplicationPublisher.process_message(state.app_name)
+    |> Publisher.process_message(state.app_name)
 
     {:noreply, state}
   end

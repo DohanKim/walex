@@ -30,7 +30,6 @@ walex-*.tar
 # VSCode
 .vscode/
 
-.tool-versions
-
-
+# .DS_Store files from macOS
+.DS_Store
 **/.DS_Store

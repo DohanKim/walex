@@ -1,23 +1,53 @@
 defmodule WalEx.SupervisorTest do
   use ExUnit.Case, async: false
+  import WalEx.Support.TestHelpers
 
   alias WalEx.Supervisor, as: WalExSupervisor
+  alias WalEx.Replication
+
+  @base_configs [
+    name: :test_name,
+    hostname: "hostname",
+    username: "username",
+    password: "password",
+    database: "todos_test",
+    port: 5432,
+    subscriptions: ["subscriptions"],
+    publication: "publication"
+  ]
 
   describe "start_link/2" do
-    test "should start a process" do
-      assert {:ok, pid} = WalExSupervisor.start_link(get_base_configs())
+    test "should start Supervisor and child processes" do
+      assert {:ok, walex_supervisor_pid} = WalExSupervisor.start_link(@base_configs)
+      assert is_pid(walex_supervisor_pid)
 
-      assert is_pid(pid)
+      assert %{active: 3, specs: 3, supervisors: 2, workers: 1} =
+               Supervisor.count_children(walex_supervisor_pid)
+
+      replication_supervisor_pid =
+        find_worker_pid(walex_supervisor_pid, Replication.Supervisor)
+
+      assert is_pid(replication_supervisor_pid)
+
+      replication_publisher_pid =
+        find_worker_pid(replication_supervisor_pid, Replication.Publisher)
+
+      assert is_pid(replication_publisher_pid)
+
+      replication_server_pid =
+        find_worker_pid(replication_supervisor_pid, Replication.Server)
+
+      assert is_pid(replication_server_pid)
     end
 
     test "should raise if any required config is missing" do
       assert_raise RuntimeError,
-                   "Following configs are missing: [:hostname, :username, :password, :port, :database, :subscriptions, :publication, :modules, :name]",
+                   "Following required configs are missing: [:hostname, :username, :password, :port, :database, :subscriptions, :publication, :name]",
                    fn -> WalExSupervisor.start_link([]) end
     end
 
     test "should start multiple supervision trees" do
-      configs_1 = get_base_configs()
+      configs_1 = @base_configs
       configs_2 = Keyword.put(configs_1, :name, :other_name)
       configs_3 = Keyword.put(configs_1, :name, :another_name)
 
@@ -31,29 +61,8 @@ defmodule WalEx.SupervisorTest do
     end
 
     test "should start WalEx.Registry" do
-      assert {:ok, _pid} = WalExSupervisor.start_link(get_base_configs())
-
-      pid = Process.whereis(:walex_registry)
-      assert is_pid(pid)
-    end
-  end
-
-  defp get_base_configs(keys \\ []) do
-    configs = [
-      name: :test_name,
-      hostname: "hostname",
-      username: "username",
-      password: "password",
-      database: "database",
-      port: 5432,
-      subscriptions: ["subscriptions"],
-      publication: "publication",
-      modules: ["modules"]
-    ]
-
-    case keys do
-      [] -> configs
-      _keys -> Keyword.take(configs, keys)
+      assert {:ok, _pid} = WalExSupervisor.start_link(@base_configs)
+      assert is_pid(Process.whereis(:walex_registry))
     end
   end
 end

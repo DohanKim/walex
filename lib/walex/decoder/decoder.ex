@@ -1,7 +1,10 @@
 # This file steals liberally from https://github.com/supabase/realtime,
 # which in turn draws on https://github.com/cainophile/pgoutput_decoder/blob/master/lib/pgoutput_decoder.ex
 
-defmodule WalEx.Postgres.Decoder do
+require Protocol
+
+defmodule WalEx.Decoder do
+  @moduledoc false
   defmodule Messages do
     defmodule(Begin, do: defstruct([:final_lsn, :commit_timestamp, :xid]))
     defmodule(Commit, do: defstruct([:flags, :lsn, :end_lsn, :commit_timestamp]))
@@ -39,18 +42,18 @@ defmodule WalEx.Postgres.Decoder do
   alias Messages.{
     Begin,
     Commit,
+    Delete,
+    Insert,
     Origin,
     Relation,
     Relation.Column,
-    Insert,
-    Update,
-    Delete,
     Truncate,
     Type,
-    Unsupported
+    Unsupported,
+    Update
   }
 
-  alias WalEx.Postgres.OidDatabase
+  alias WalEx.OidDatabase
 
   @doc """
   Parses logical replication messages from Postgres
@@ -58,7 +61,7 @@ defmodule WalEx.Postgres.Decoder do
   ## Examples
 
       iex> decode_message(<<73, 0, 0, 96, 0, 78, 0, 2, 116, 0, 0, 0, 3, 98, 97, 122, 116, 0, 0, 0, 3, 53, 54, 48>>)
-      %WalEx.Postgres.Decoder.Messages.Insert{relation_id: 24576, tuple_data: {"baz", "560"}}
+      %WalEx.Decoder.Messages.Insert{relation_id: 24576, tuple_data: {"baz", "560"}}
 
   """
   def decode_message(message) when is_binary(message) do
@@ -268,3 +271,5 @@ defmodule WalEx.Postgres.Decoder do
   defp decode_lsn(<<xlog_file::integer-32, xlog_offset::integer-32>>),
     do: {xlog_file, xlog_offset}
 end
+
+Protocol.derive(Jason.Encoder, WalEx.Decoder.Messages.Relation.Column)
