@@ -11,6 +11,8 @@ defmodule WalEx.Replication.Server do
   alias WalEx.Decoder
   alias WalEx.Replication.Publisher
 
+  require Logger
+
   def start_link(opts) do
     app_name = Keyword.get(opts, :app_name)
     opts = set_pgx_replication_conn_opts(app_name)
@@ -40,6 +42,7 @@ defmodule WalEx.Replication.Server do
   @impl true
   def handle_connect(state) do
     temp_slot = "walex_temp_slot_" <> Integer.to_string(:rand.uniform(9_999))
+    Logger.info("Creating replication slot: #{temp_slot}")
 
     query = "CREATE_REPLICATION_SLOT #{temp_slot} TEMPORARY LOGICAL pgoutput NOEXPORT_SNAPSHOT;"
 
