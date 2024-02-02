@@ -1,6 +1,6 @@
 defmodule WalEx.DatabaseTest do
   use ExUnit.Case, async: false
-
+  import WalEx.Support.TestHelpers
   alias WalEx.Supervisor, as: WalExSupervisor
 
   require Logger
@@ -49,7 +49,7 @@ defmodule WalEx.DatabaseTest do
       assert String.contains?(slot_name, "walex_temp_slot")
     end
 
-    test "should re-initiate replication slot", %{database_pid: database_pid} do
+    test "should re-initiate after DB reconnection", %{database_pid: database_pid} do
       {:ok, supervisor_pid} = TestSupervisor.start_link()
 
       database_pid =
@@ -76,21 +76,39 @@ defmodule WalEx.DatabaseTest do
 
       Process.info(database_pid) |> tap(&Logger.debug("Database pid" <> inspect(&1)))
 
-      Supervisor.terminate_child(supervisor_pid, database_pid)
+      update_user(database_pid)
+
+      :timer.sleep(3000)
+
+      Supervisor.terminate_child(supervisor_pid, DBConnection.ConnectionPool)
       |> tap(&Logger.debug("Terminated" <> inspect(&1)))
 
-      Supervisor.delete_child(supervisor_pid, database_pid)
-      |> tap(&Logger.debug("Deleted" <> inspect(&1)))
+      Process.info(database_pid) |> tap(&Logger.debug("Database pid" <> inspect(&1)))
 
       Supervisor.which_children(supervisor_pid)
       |> tap(&Logger.debug("Children" <> inspect(&1)))
 
       # Process.exit(database_pid, :kill)
 
+      Logger.debug("waiting")
       :timer.sleep(3000)
+
+      Logger.debug("done waiting")
+
+      Supervisor.restart_child(supervisor_pid, DBConnection.ConnectionPool)
+      |> tap(&Logger.debug("Restarted" <> inspect(&1)))
 
       Supervisor.which_children(supervisor_pid)
       |> tap(&Logger.debug("Children" <> inspect(&1)))
+
+      database_pid =
+        Supervisor.which_children(supervisor_pid)
+        |> tap(&Logger.debug("Children" <> inspect(&1)))
+        |> Enum.find(&match?({DBConnection.ConnectionPool, _, _, _}, &1))
+        |> elem(1)
+        |> tap(&Logger.debug("Database pid" <> inspect(&1)))
+
+      update_user(database_pid)
 
       database_pid =
         Supervisor.which_children(supervisor_pid)
@@ -148,7 +166,10 @@ defmodule TestSupervisor do
     database: @database,
     port: 5432,
     subscriptions: ["user", "todo"],
-    publication: "events"
+    publication: "events",
+    destinations: [
+      modules: [TestModule]
+    ]
   ]
 
   def start_link do
@@ -164,4 +185,20 @@ defmodule TestSupervisor do
 
     Supervisor.init(children, strategy: :one_for_one)
   end
+end
+
+defmodule TestModule do
+  require Logger
+  use WalEx.Event, name: :test_app
+
+  on_event(
+    :all,
+    fn events -> Logger.info("on_event event occurred: #{inspect(events, pretty: true)}") end
+  )
+
+  on_update(
+    :user,
+    [],
+    fn events -> Logger.info("on_update event occurred: #{inspect(events, pretty: true)}") end
+  )
 end
