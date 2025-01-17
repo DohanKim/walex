@@ -58,6 +58,12 @@ defmodule WalEx.Replication.Server do
     {:query, query, %{state | step: :publication_exists}}
   end
 
+    @impl true
+  def handle_disconnect(state) do
+    Logger.error("Disconnected from Postgres WAL slot: #{state.slot_name}, with state: #{inspect(state)}")
+    {:disconnect, state}
+  end
+
   @impl true
   def handle_result([%Postgrex.Result{num_rows: 1}], state = %{step: :publication_exists}) do
     if state.durable_slot do
@@ -82,6 +88,7 @@ defmodule WalEx.Replication.Server do
 
   @impl true
   def handle_result([%Postgrex.Result{num_rows: 0}], state = %{step: :slot_exists}) do
+    Logger.info("Slot doesn't exist, creating durable slot: #{state.slot_name}")
     query = QueryBuilder.create_durable_slot(state)
     {:query, query, %{state | step: :create_slot}}
   end
@@ -91,10 +98,12 @@ defmodule WalEx.Replication.Server do
         [%Postgrex.Result{columns: ["active"], rows: [[active]]}],
         state = %{step: :slot_exists}
       ) do
+    Logger.info("Slot exists, checking if it's active: #{state.slot_name}")
     case active do
       "f" ->
         Logger.info("Activating inactive replication slot: #{state.slot_name}")
-        start_replication_with_retry(state, 0, @initial_backoff)
+        query = QueryBuilder.start_replication_slot(state)
+        {:stream, query, [], %{state | step: :streaming}}
 
       "t" ->
         Logger.info(
@@ -114,29 +123,14 @@ defmodule WalEx.Replication.Server do
 
   @impl true
   def handle_result([%Postgrex.Result{} | _results], state = %{step: :create_slot}) do
-    start_replication_with_retry(state, 0, @initial_backoff)
+    query = QueryBuilder.start_replication_slot(state)
+    {:stream, query, [], %{state | step: :streaming}}
   end
 
   @impl true
   def handle_result(%Postgrex.Error{} = error, %{step: :create_slot}) do
     # if durable slot, can happen if multiple instances try to create the same slot
     raise "Failed to create replication slot, #{inspect(error)}"
-  end
-
-  @impl true
-  def handle_result(
-        %Postgrex.Error{postgres: %{code: :object_in_use}},
-        state = %{step: {:start_replication, retry_count, backoff}}
-      ) do
-    Logger.warning("Replication slot in use, retrying... (attempt #{retry_count + 1})")
-    Process.sleep(backoff)
-    start_replication_with_retry(state, retry_count + 1, backoff * 2)
-  end
-
-  @impl true
-  def handle_result(_, state = %{step: {:start_replication, _retry_count, _backoff}}) do
-    Logger.info("Successfully started replication slot: #{state.slot_name}")
-    {:noreply, %{state | step: :streaming}}
   end
 
   @impl true
@@ -150,6 +144,8 @@ defmodule WalEx.Replication.Server do
 
   @impl true
   def handle_data(<<?k, wal_end::64, _clock::64, reply>>, state) do
+    Logger.info("Keep alive for slot: #{state.slot_name}, wal_end: #{wal_end}, reply: #{reply}")
+
     messages =
       case reply do
         1 -> [<<?r, wal_end + 1::64, wal_end + 1::64, wal_end + 1::64, current_time()::64, 0>>]
@@ -185,22 +181,6 @@ defmodule WalEx.Replication.Server do
     ]
 
     extra_opts ++ database_configs ++ replications_name
-  end
-
-  defp start_replication_with_retry(state, retry_count, backoff)
-       when retry_count < @max_retries do
-    query = QueryBuilder.start_replication_slot(state)
-    {:stream, query, [], %{state | step: {:start_replication, retry_count, backoff}}}
-  end
-
-  defp start_replication_with_retry(state, _retry_count, _backoff) do
-    Logger.warning(
-      "Failed to start replication slot after maximum retries. Scheduling another check."
-    )
-
-    schedule_slot_check()
-
-    {:noreply, state}
   end
 
   defp schedule_slot_check() do
