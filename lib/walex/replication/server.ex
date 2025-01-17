@@ -144,8 +144,6 @@ defmodule WalEx.Replication.Server do
 
   @impl true
   def handle_data(<<?k, wal_end::64, _clock::64, reply>>, state) do
-    Logger.info("Keep alive for slot: #{state.slot_name}, wal_end: #{wal_end}, reply: #{reply}")
-
     messages =
       case reply do
         1 -> [<<?r, wal_end + 1::64, wal_end + 1::64, wal_end + 1::64, current_time()::64, 0>>]
