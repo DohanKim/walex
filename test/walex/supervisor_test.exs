@@ -7,13 +7,13 @@ defmodule WalEx.SupervisorTest do
 
   @base_configs [
     name: :test_name,
-    hostname: "hostname",
-    username: "username",
-    password: "password",
+    hostname: "localhost",
+    username: "postgres",
+    password: "postgres",
     database: "todos_test",
     port: 5432,
     subscriptions: ["subscriptions"],
-    publication: "publication"
+    publication: "events"
   ]
 
   describe "start_link/2" do
