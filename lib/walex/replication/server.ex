@@ -59,6 +59,15 @@ defmodule WalEx.Replication.Server do
   end
 
   @impl true
+  def handle_disconnect(state) do
+    Logger.error(
+      "Disconnected from Postgres WAL slot: #{state.slot_name}, with state: #{inspect(state)}"
+    )
+
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_result([%Postgrex.Result{num_rows: 1}], state = %{step: :publication_exists}) do
     if state.durable_slot do
       query = QueryBuilder.slot_exists(state)
@@ -82,6 +91,8 @@ defmodule WalEx.Replication.Server do
 
   @impl true
   def handle_result([%Postgrex.Result{num_rows: 0}], state = %{step: :slot_exists}) do
+    Logger.info("Slot doesn't exist, creating durable slot: #{state.slot_name}")
+
     query = QueryBuilder.create_durable_slot(state)
     {:query, query, %{state | step: :create_slot}}
   end
@@ -91,6 +102,8 @@ defmodule WalEx.Replication.Server do
         [%Postgrex.Result{columns: ["active"], rows: [[active]]}],
         state = %{step: :slot_exists}
       ) do
+    Logger.info("Slot exists, checking if it's active: #{state.slot_name}")
+
     case active do
       "f" ->
         Logger.info("Activating inactive replication slot: #{state.slot_name}")
@@ -114,6 +127,8 @@ defmodule WalEx.Replication.Server do
 
   @impl true
   def handle_result([%Postgrex.Result{} | _results], state = %{step: :create_slot}) do
+    Logger.info("Slot successfully created: #{state.slot_name}")
+
     start_replication_with_retry(state, 0, @initial_backoff)
   end
 
@@ -177,7 +192,7 @@ defmodule WalEx.Replication.Server do
       :socket_options
     ]
 
-    extra_opts = [auto_reconnect: true]
+    extra_opts = [auto_reconnect: false]
     database_configs = WalEx.Config.get_configs(app_name, database_configs_keys)
 
     replications_name = [
